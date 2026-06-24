@@ -2,6 +2,7 @@
 	import { get } from "svelte/store";
 	import { snapshot, selectedCountry, selectedCountryData, mapInstance, headlineThreshold } from "$lib/stores/data.js";
 	import { getCountryName } from "$lib/countries.js";
+	import { trackEvent } from "$lib/analytics.js";
 
 	let downloading = $state(false);
 
@@ -53,6 +54,7 @@
 		const climAvailable = anomaly != null;
 		const warmer = anomaly != null && anomaly >= 0;
 
+		trackEvent('image_download', { country: place });
 		downloading = true;
 		try {
 			// Ensure Barlow is loaded before painting.

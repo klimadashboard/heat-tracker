@@ -14,7 +14,7 @@
 
 	let { children } = $props();
 
-	// Width of the hero rail in the XL split layout. Stored as a CSS length and
+// Width of the hero rail in the XL split layout. Stored as a CSS length and
 	// applied only at the xl breakpoint (see the style media query), so smaller
 	// screens keep the full-width stacked layout. Persisted across visits.
 	let railWidth = $state("33%");

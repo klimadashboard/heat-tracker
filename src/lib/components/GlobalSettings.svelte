@@ -1,6 +1,7 @@
 <script lang="ts">
 	import { headlineThreshold, setHeadlineThreshold, selectedDate } from "$lib/stores/data.js";
 	import type { SelectedDate } from "$lib/stores/data.js";
+	import { trackEvent } from "$lib/analytics.js";
 
 	const DEFAULT = 30;
 	const MIN = 25;
@@ -43,7 +44,7 @@
 			: 'border-zinc-700 hover:border-zinc-500'}"
 		aria-label="Settings"
 		aria-expanded={open}
-		onclick={() => (open = !open)}
+		onclick={() => { open = !open; if (!open) return; trackEvent('settings_open'); }}
 	>
 		<!-- Threshold + date indicators -->
 		<span class="text-xs font-medium tabular-nums leading-none {isDefault ? 'text-zinc-400' : 'text-zinc-300'}">
