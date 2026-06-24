@@ -1,0 +1,21 @@
+FROM python:3.12-slim
+
+# eccodes is required by cfgrib for GRIB2 parsing
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    libeccodes-dev \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip install --no-cache-dir \
+    cfgrib \
+    xarray \
+    scipy \
+    numpy \
+    requests \
+    pythermalcomfort
+
+WORKDIR /app
+
+COPY scripts/fetch-dwd.py scripts/fetch-dwd.py
+
+# Keep the container alive so Coolify scheduled tasks can exec into it
+CMD ["tail", "-f", "/dev/null"]

@@ -1,0 +1,64 @@
+node_modules
+
+# Output
+.output
+.vercel
+.netlify
+.wrangler
+/.svelte-kit
+/build
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.*
+!.env.example
+!.env.test
+
+# Vite
+vite.config.js.timestamp-*
+vite.config.ts.timestamp-*
+
+# Legacy font formats (only woff2/woff are used)
+static/fonts/*.eot
+static/fonts/*.ttf
+static/fonts/*.svg
+
+# Claude Code local config
+.claude/
+
+# Database (generated at runtime)
+data/heat-tracker.db
+data/heat-tracker.db-wal
+data/heat-tracker.db-shm
+
+# Raw GeoTIFF source tiles (used only by build-population-grid.js, not needed at runtime)
+data/ghspop-tiles/
+
+# Generated intermediate file (country names live in src/lib/countries.ts)
+data/countries.json
+
+# Raw E-OBS source + intermediates (only consumed by build-climatology.py).
+# The climatology .npz is large and is generated/deployed out-of-band; the
+# pipeline degrades gracefully (anomaly fields become null) when it is absent.
+data/eobs-*.nc
+data/.climatology-chunks/
+data/climatology-*.npz
+
+# Database backups
+data/*.db.bak
+
+# Pre-generated API payloads — regenerated at runtime by scripts/fetch-dwd.py
+data/grid-*.geojson
+data/grid-*.geojson.gz
+data/current-*.json
+
+# Raw NUTS boundaries source (16 MB; regenerable — see scripts/build-nuts-grid.py).
+# The compact derived data/nuts-by-cell.json IS committed and used at runtime.
+data/nuts.geojson
+
+# Python bytecode
+__pycache__/

@@ -1,0 +1,32 @@
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    ports:
+      - "${PORT:-3000}:3000"
+    volumes:
+      - heat-data:/app/data
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      # Optional: override default 30°C threshold
+      # - HEAT_THRESHOLD=30
+    restart: unless-stopped
+
+  fetcher:
+    build:
+      context: .
+      dockerfile: Dockerfile.fetcher
+    volumes:
+      - heat-data:/app/data
+    environment:
+      # Must match app threshold (or omit for the default 30)
+      # - HEAT_THRESHOLD=30
+      - PYTHONUNBUFFERED=1
+    restart: unless-stopped
+    depends_on:
+      - app
+
+volumes:
+  heat-data:
