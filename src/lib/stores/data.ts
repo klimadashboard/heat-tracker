@@ -16,8 +16,8 @@ export interface Snapshot {
 	// Climatology indicators vs. the E-OBS 1961–1990 reference. Present when the
 	// climatology pipeline has run (scripts/build-climatology.py + fetch-dwd.py).
 	meanAnomalyC?: number | null;
-	/** People where today's temperature exceeds the 1961–1990 90th percentile */
-	popAboveAvg?: number;
+	/** People where today's temperature exceeds the 1961–1990 90th percentile. null = clim data unavailable (not the same as 0). */
+	popAboveAvg?: number | null;
 	referencePeriod?: string;
 }
 
@@ -29,7 +29,7 @@ export interface CountryData {
 	maxApparentTemperature: number | null;
 	avgTemperature: number | null;
 	avgAnomalyC?: number | null;
-	popAboveAvg?: number;
+	popAboveAvg?: number | null;
 }
 
 export interface GridFeature {
@@ -190,16 +190,17 @@ export async function loadData() {
 			currentParams = `?preset=today&indicator=temperature&threshold=${thr}`;
 			gridParams    = `?preset=today&indicator=temperature&threshold=${thr}`;
 		} else if (day === 'tomorrow') {
-			// clim_preset tells /api/current to overlay climatology headlines from the
-			// pre-generated next3d file, while from/to constrains the range query to
-			// just tomorrow's UTC day (avoids the fast-path short-circuit that would
-			// otherwise return the full 3-day window).
+			// clim_preset=tomorrow overlays climatology headlines from the pre-generated
+			// tomorrow file (a single UTC day, so the diurnal-coverage guard reliably
+			// passes). from/to constrains the range query to just tomorrow's UTC day.
 			const { from, to } = utcDayBounds(1);
-			currentParams = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&clim_preset=next3d&indicator=temperature&threshold=${thr}`;
+			currentParams = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&clim_preset=tomorrow&indicator=temperature&threshold=${thr}`;
 			gridParams    = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 		} else {
+			// clim_preset=yesterday overlays climatology headlines from the pre-generated
+			// yesterday file — without it the DB range path has no popAboveAvg.
 			const { from, to } = utcDayBounds(-1);
-			currentParams = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
+			currentParams = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&clim_preset=yesterday&indicator=temperature&threshold=${thr}`;
 			gridParams    = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 		}
 

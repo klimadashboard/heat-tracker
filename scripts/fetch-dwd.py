@@ -735,11 +735,25 @@ def write_current_json(db_path, output_dir, threshold, climatology=None, pop_gri
         }
 
     now = dt.datetime.now(dt.timezone.utc)
+    yesterday = (now - dt.timedelta(days=1)).date()
+    tomorrow  = (now + dt.timedelta(days=1)).date()
     presets = {
+        'yesterday': (
+            dt.datetime(yesterday.year, yesterday.month, yesterday.day, 0, 0, 0,
+                        tzinfo=dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+            dt.datetime(yesterday.year, yesterday.month, yesterday.day, 23, 59, 59,
+                        tzinfo=dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+        ),
         'today': (
             dt.datetime(now.year, now.month, now.day, 0, 0, 0,
                         tzinfo=dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
             dt.datetime(now.year, now.month, now.day, 23, 59, 59,
+                        tzinfo=dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+        ),
+        'tomorrow': (
+            dt.datetime(tomorrow.year, tomorrow.month, tomorrow.day, 0, 0, 0,
+                        tzinfo=dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
+            dt.datetime(tomorrow.year, tomorrow.month, tomorrow.day, 23, 59, 59,
                         tzinfo=dt.timezone.utc).strftime('%Y-%m-%dT%H:%M:%S.000Z'),
         ),
         'last7d': (

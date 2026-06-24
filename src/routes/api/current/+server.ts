@@ -22,9 +22,11 @@ const DEFAULT_THRESHOLD = Number(process.env.HEAT_THRESHOLD) || 30;
 // Pre-generated static JSON files, written by scripts/fetch-dwd.py after every
 // data refresh so the first visitor never waits for a DB query.
 const CURRENT_PRESET_FILES: Record<string, string> = {
-	today:  join(process.cwd(), 'data', 'current-today.json'),
-	last7d: join(process.cwd(), 'data', 'current-last7d.json'),
-	next3d: join(process.cwd(), 'data', 'current-next3d.json'),
+	yesterday: join(process.cwd(), 'data', 'current-yesterday.json'),
+	today:     join(process.cwd(), 'data', 'current-today.json'),
+	tomorrow:  join(process.cwd(), 'data', 'current-tomorrow.json'),
+	last7d:    join(process.cwd(), 'data', 'current-last7d.json'),
+	next3d:    join(process.cwd(), 'data', 'current-next3d.json'),
 };
 
 // Served from an in-memory cache that refreshes in the background (never blocks
@@ -219,7 +221,9 @@ export const GET: RequestHandler = async ({ url }) => {
 			// Prefer the pre-generated clim overlay; fall back to the DB-computed
 			// area-mean anomaly (available whenever anomaly_c is in grid_data).
 			meanAnomalyC: clim?.snapshot?.meanAnomalyC ?? summary.meanAnomalyC ?? null,
-			popAboveAvg: clim?.snapshot?.popAboveAvg ?? 0,
+			// null means "clim data not available for this range" — distinct from a
+			// genuine 0 (nobody above p90). The frontend hides the stat when null.
+			popAboveAvg: clim?.snapshot?.popAboveAvg ?? null,
 			referencePeriod: clim?.snapshot?.referencePeriod ?? (summary.meanAnomalyC != null ? '1961–1990' : undefined),
 		},
 		countries: countries.map((c: any) => {

@@ -54,6 +54,9 @@
 	// meanAnomalyC/avgAnomalyC come back null — hide those lines rather than
 	// rendering "–" / "0", and show a short note instead.
 	let climAvailable = $derived(anomaly != null);
+	// popAboveAvg === null means clim data wasn't available for this date range
+	// (distinct from a genuine 0). Hide the "uncommonly hot" line in that case.
+	let hasPopAboveAvg = $derived(popAboveAvg != null);
 
 	let dateHeading = $derived(
 		$selectedDate === 'yesterday' ? 'Yesterday' : $selectedDate === 'tomorrow' ? 'Tomorrow' : 'Today'
@@ -162,7 +165,7 @@ We use the 1961–1990 baseline — the WMO/IPCC reference for climate change �
 				<strong class="font-semibold text-zinc-100">{$headlineThreshold}°C or more</strong
 				>.{@render info(2)}
 			</li>
-			{#if climAvailable}
+			{#if climAvailable && hasPopAboveAvg}
 				<li class="relative">
 					<span class="text-zinc-600" aria-hidden="true">… </span><span class="text-zinc-500 font-normal">approx.</span> <strong class="font-bold text-amber-400">{millions(popAboveAvg)}</strong>
 					people {pastTense ? "experienced" : "are experiencing"}
