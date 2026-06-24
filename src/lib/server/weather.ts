@@ -121,6 +121,7 @@ export function getGridDataForRange(
 		       MAX(apparent_temperature) as apparentTemperature,
 		       MIN(temperature) as minTemperature,
 		       MIN(apparent_temperature) as minApparentTemperature,
+		       AVG(anomaly_c) as anomalyC,
 		       CASE WHEN MAX(${col}) >= ? THEN 1 ELSE 0 END as isAffected
 		FROM grid_data
 		WHERE snapshot_id IN (${bestSnapshotsSubquery()}) AND country != 'TR'
@@ -142,6 +143,7 @@ export function getPeriodSummaryForRange(
 	newestTimestamp: string | null;
 	hasForecast: boolean;
 	latestModelRunTime: string | null;
+	meanAnomalyC: number | null;
 } | null {
 	const col = indicatorColumn(indicator);
 	const db = getDb();
@@ -171,6 +173,20 @@ export function getPeriodSummaryForRange(
 		WHERE wasAffected = 1
 	`).get(threshold, from, to) as any;
 
+	// Area-mean anomaly: average per-cell daily-mean anomaly across all populated
+	// cells. anomaly_c is NULL when the climatology pipeline hasn't run yet.
+	const anomalyRow = db.prepare(`
+		SELECT AVG(cell_avg) as meanAnomalyC
+		FROM (
+			SELECT AVG(anomaly_c) as cell_avg
+			FROM grid_data
+			WHERE snapshot_id IN (${bestSnapshotsSubquery()}) AND country != 'TR'
+			  AND anomaly_c IS NOT NULL
+			GROUP BY lat, lon
+		)
+		WHERE cell_avg IS NOT NULL
+	`).get(from, to) as any;
+
 	return {
 		totalAffected: affected?.totalAffected ?? 0,
 		totalPopulation: stats.totalPopulation ?? 0,
@@ -178,7 +194,8 @@ export function getPeriodSummaryForRange(
 		oldestTimestamp: stats.oldestTimestamp,
 		newestTimestamp: stats.newestTimestamp,
 		hasForecast: stats.hasForecast === 1,
-		latestModelRunTime: stats.latestModelRunTime ?? null
+		latestModelRunTime: stats.latestModelRunTime ?? null,
+		meanAnomalyC: anomalyRow?.meanAnomalyC ?? null,
 	};
 }
 

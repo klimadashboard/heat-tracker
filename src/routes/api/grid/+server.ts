@@ -141,8 +141,9 @@ export const GET: RequestHandler = async ({ url, request }) => {
 				lon: Math.round(cell.lon * 1000) / 1000,
 				temperature: cell.temperature,
 				apparentTemperature: cell.apparentTemperature,
-				...(cell.minTemperature      !== undefined && { minTemperature:         cell.minTemperature }),
-				...(cell.minApparentTemperature !== undefined && { minApparentTemperature: cell.minApparentTemperature }),
+				...(cell.minTemperature         !== undefined && { minTemperature:            cell.minTemperature }),
+				...(cell.minApparentTemperature !== undefined && { minApparentTemperature:    cell.minApparentTemperature }),
+				...(cell.anomalyC               != null      && { anomalyC:                  cell.anomalyC }),
 			}
 		}))
 	};

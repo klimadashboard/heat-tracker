@@ -216,9 +216,11 @@ export const GET: RequestHandler = async ({ url }) => {
 			oldestTimestamp: summary.oldestTimestamp,
 			hasForecast: summary.hasForecast,
 			modelRunTime: summary.latestModelRunTime ?? null,
-			meanAnomalyC: clim?.snapshot?.meanAnomalyC ?? null,
+			// Prefer the pre-generated clim overlay; fall back to the DB-computed
+			// area-mean anomaly (available whenever anomaly_c is in grid_data).
+			meanAnomalyC: clim?.snapshot?.meanAnomalyC ?? summary.meanAnomalyC ?? null,
 			popAboveAvg: clim?.snapshot?.popAboveAvg ?? 0,
-			referencePeriod: clim?.snapshot?.referencePeriod,
+			referencePeriod: clim?.snapshot?.referencePeriod ?? (summary.meanAnomalyC != null ? '1961–1990' : undefined),
 		},
 		countries: countries.map((c: any) => {
 			const extra = clim?.countriesByCode.get(c.country);

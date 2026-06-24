@@ -70,6 +70,10 @@ function initializeDb(db: Database.Database) {
 	const migrations: [string, string, string][] = [
 		['snapshots',          'is_forecast',    'INTEGER NOT NULL DEFAULT 0'],
 		['snapshots',          'model_run_time', 'TEXT'],
+		// Added by fetch-dwd.py; mirrored here so fresh deploys are consistent.
+		['grid_data',          'anomaly_c',           'REAL'],
+		['country_aggregates', 'avg_anomaly_c',        'REAL'],
+		['country_aggregates', 'pop_above_avg',        'INTEGER NOT NULL DEFAULT 0'],
 	];
 
 	for (const [table, col, typedef] of migrations) {
