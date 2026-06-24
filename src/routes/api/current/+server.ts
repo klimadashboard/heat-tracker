@@ -196,12 +196,14 @@ export const GET: RequestHandler = async ({ url }) => {
 	const latest = getLatestSnapshot();
 	const countries = getCountryAggregatesForRange(from, to, indicator, threshold);
 
-	// Overlay climatology headline fields from the pre-generated preset file,
-	// if one matches. The climatology indicators don't depend on the user's
-	// indicator/threshold selection, so we can re-use them for any DB-path
-	// response. Falls through cleanly (just leaves the fields undefined) when
-	// no preset file matches — e.g. for custom date ranges.
-	const climPreset = preset && preset in CURRENT_PRESET_FILES ? preset : null;
+	// Overlay climatology headline fields from the pre-generated preset file.
+	// `clim_preset` lets callers specify a different preset for climatology than
+	// for the date range (e.g. tomorrow's range query wants next3d climatology).
+	const climPresetParam = url.searchParams.get('clim_preset');
+	const climPreset =
+		(climPresetParam && climPresetParam in CURRENT_PRESET_FILES)
+			? climPresetParam
+			: (preset && preset in CURRENT_PRESET_FILES ? preset : null);
 	const clim = climPreset ? getClimatologyFromPregen(climPreset) : null;
 
 	return json({

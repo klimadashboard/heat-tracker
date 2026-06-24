@@ -36,8 +36,11 @@
 				class="underline not-italic underline-offset-3 decoration-amber-600 decoration-2"
 				>more frequent and more deadly</em
 			>
-			across Europe. Updated every 3 hours, this tool overlays the latest weather
-			observations and forecasts with a European population grid to estimate
+			across Europe. Updated hourly, this tool overlays a
+			<em class="underline not-italic underline-offset-3 decoration-amber-600 decoration-2">live weather grid</em>
+			with a
+			<em class="underline not-italic underline-offset-3 decoration-amber-600 decoration-2">European population grid</em>
+			to estimate
 			<em
 				class="underline not-italic underline-offset-3 decoration-amber-600 decoration-2"
 				>how many people are currently exposed to dangerous heat</em

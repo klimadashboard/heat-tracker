@@ -698,8 +698,14 @@
 	}
 
 	// Re-render when grid data changes (renderGrid no-ops until the style is
-	// ready; the load handler calls it again once it is).
-	$: if ($gridData) renderGrid();
+	// ready; the load handler calls it again once it is). When gridData is
+	// cleared at the start of loadData(), blank the map immediately so it stays
+	// in sync with the headline skeleton.
+	$: if ($gridData) {
+		renderGrid();
+	} else if (map && map.getSource('grid')) {
+		(map.getSource('grid') as maplibregl.GeoJSONSource).setData(EMPTY_FC);
+	}
 
 	// Dim non-selected country (reacts to $selectedCountry; uses the locally
 	// tracked currentView, which is kept in sync by the subscription below).

@@ -175,6 +175,9 @@ export const clientAffected = derived(
 
 export async function loadData() {
 	isLoading.set(true);
+	snapshot.set(null);
+	countries.set([]);
+	gridData.set(null);
 	error.set(null);
 
 	try {
@@ -186,9 +189,16 @@ export async function loadData() {
 		if (day === 'today') {
 			currentParams = `?preset=today&indicator=temperature&threshold=${thr}`;
 			gridParams    = `?preset=today&indicator=temperature&threshold=${thr}`;
+		} else if (day === 'tomorrow') {
+			// clim_preset tells /api/current to overlay climatology headlines from the
+			// pre-generated next3d file, while from/to constrains the range query to
+			// just tomorrow's UTC day (avoids the fast-path short-circuit that would
+			// otherwise return the full 3-day window).
+			const { from, to } = utcDayBounds(1);
+			currentParams = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&clim_preset=next3d&indicator=temperature&threshold=${thr}`;
+			gridParams    = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 		} else {
-			const offset = day === 'yesterday' ? -1 : 1;
-			const { from, to } = utcDayBounds(offset);
+			const { from, to } = utcDayBounds(-1);
 			currentParams = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 			gridParams    = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 		}
