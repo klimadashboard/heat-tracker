@@ -753,6 +753,9 @@
 </script>
 
 <div class="absolute top-0 left-0 w-full h-full" bind:this={mapContainer}></div>
+{#if !$gridData}
+	<div class="absolute inset-0 pointer-events-none z-10 bg-zinc-800/40 animate-pulse"></div>
+{/if}
 
 <style>
 	:global(.maplibregl-ctrl-top-left) { top: 12px; left: 12px; }

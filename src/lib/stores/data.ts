@@ -190,17 +190,15 @@ export async function loadData() {
 			currentParams = `?preset=today&indicator=temperature&threshold=${thr}`;
 			gridParams    = `?preset=today&indicator=temperature&threshold=${thr}`;
 		} else if (day === 'tomorrow') {
-			// clim_preset=tomorrow overlays climatology headlines from the pre-generated
-			// tomorrow file (a single UTC day, so the diurnal-coverage guard reliably
-			// passes). from/to constrains the range query to just tomorrow's UTC day.
 			const { from, to } = utcDayBounds(1);
-			currentParams = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&clim_preset=tomorrow&indicator=temperature&threshold=${thr}`;
+			// preset=tomorrow → fast path serves the pre-generated file for default
+			// requests; from/to are still sent so the DB fallback has a range to query
+			// when threshold/indicator are non-default.
+			currentParams = `?preset=tomorrow&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 			gridParams    = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 		} else {
-			// clim_preset=yesterday overlays climatology headlines from the pre-generated
-			// yesterday file — without it the DB range path has no popAboveAvg.
 			const { from, to } = utcDayBounds(-1);
-			currentParams = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&clim_preset=yesterday&indicator=temperature&threshold=${thr}`;
+			currentParams = `?preset=yesterday&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 			gridParams    = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 		}
 
@@ -209,19 +207,20 @@ export async function loadData() {
 			fetch(`/api/grid${gridParams}`)
 		]);
 
-		if (gridRes.ok) {
-			// /api/grid returns the GeoJSON FeatureCollection directly.
-			gridData.set(await gridRes.json());
-		}
-
+		// Process the small current response first so headlines render immediately,
+		// before the large grid body finishes transferring and parsing.
 		if (!currentRes.ok) {
 			const errData = await currentRes.json().catch(() => ({}));
 			throw new Error(errData.error || 'Failed to load data');
 		}
-
 		const currentData = await currentRes.json();
 		snapshot.set(currentData.snapshot);
 		countries.set(currentData.countries);
+
+		if (gridRes.ok) {
+			// /api/grid returns the GeoJSON FeatureCollection directly.
+			gridData.set(await gridRes.json());
+		}
 	} catch (err) {
 		error.set(err instanceof Error ? err.message : 'Unknown error');
 	} finally {

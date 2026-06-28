@@ -6,6 +6,8 @@
 		headlineThreshold,
 		clientAffected,
 		selectedDate,
+		error,
+		loadData,
 	} from "$lib/stores/data.js";
 	import { getCountryName } from "$lib/countries.js";
 
@@ -153,7 +155,16 @@ We use the 1961–1990 baseline — the WMO/IPCC reference for climate change �
 	{/if}
 {/snippet}
 
-{#if hasData}
+{#if $error && !hasData}
+	<div class="flex flex-col gap-3">
+		<p class="text-sm text-zinc-400">Could not load data. Check your connection or try again.</p>
+		<button
+			type="button"
+			class="self-start text-xs text-amber-400 hover:text-amber-300 transition-colors underline-offset-2 hover:underline"
+			onclick={() => loadData()}
+		>Retry →</button>
+	</div>
+{:else if hasData}
 	<div data-testid="headlines" bind:this={root}>
 		<p class="text-2xl font-bold text-zinc-100 mb-2 tracking-tight">
 			{dateHeading} in {place}…
@@ -199,9 +210,10 @@ We use the 1961–1990 baseline — the WMO/IPCC reference for climate change �
 	</div>
 {:else}
 	<div class="flex flex-col gap-2" aria-hidden="true">
-		<div class="h-7 w-48 bg-zinc-900 rounded animate-pulse mb-1"></div>
+		<div class="h-7 w-48 bg-zinc-800 rounded animate-pulse mb-1"></div>
 		{#each Array(3) as _}
-			<div class="h-6 w-full max-w-xl bg-zinc-900 rounded animate-pulse"></div>
+			<div class="h-6 w-full max-w-xl bg-zinc-800 rounded animate-pulse"></div>
 		{/each}
 	</div>
 {/if}
+
