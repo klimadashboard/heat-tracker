@@ -1,13 +1,16 @@
 FROM python:3.12-slim
 
-# eccodes is required by cfgrib for GRIB2 parsing
+# libeccodes-dev provides headers in case eccodes builds from source (usually not needed
+# since the eccodes PyPI wheel bundles eccodeslib, but harmless to keep as a fallback).
 RUN apt-get update && apt-get install -y --no-install-recommends \
     libeccodes-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# cfgrib and xarray removed: fetch-dwd.py now uses eccodes directly to avoid the
+# cfgrib segfault triggered by DWD's duration-string step encoding (e.g. "0m")
+# introduced in eccodeslib 2.47.3 / cfgrib 0.9.15.x.
 RUN pip install --no-cache-dir \
-    cfgrib \
-    xarray \
+    eccodes \
     scipy \
     numpy \
     requests \

@@ -20,7 +20,7 @@ Options:
     --verbose              Enable debug logging
 
 Dependencies:
-    pip install cfgrib xarray scipy requests python-dotenv
+    pip install eccodes scipy requests python-dotenv
     brew install eccodes   # macOS
     apt-get install libeccodes-dev  # Debian/Ubuntu
 
@@ -33,6 +33,7 @@ import bz2
 import gzip
 import json
 import logging
+import multiprocessing
 import os
 import sqlite3
 import sys
@@ -46,11 +47,10 @@ import requests
 from scipy.interpolate import RegularGridInterpolator
 
 try:
-    import cfgrib
-    import xarray as xr
-    HAS_CFGRIB = True
+    import eccodes as _eccodes
+    HAS_ECCODES = True
 except ImportError:
-    HAS_CFGRIB = False
+    HAS_ECCODES = False
 
 try:
     from dotenv import load_dotenv
@@ -292,41 +292,53 @@ def load_grib_variable(path):
     """
     Load a GRIB2 file and return {'lats', 'lons', 'values'}.
 
-    Uses cfgrib.open_datasets() to handle DWD's non-standard GRIB parameter IDs.
+    Uses eccodes directly (bypassing cfgrib) so that DWD's duration-string step
+    encoding (e.g. "0m" instead of the former integer 0) doesn't trigger the
+    cfgrib segfault introduced by eccodeslib 2.47.3 / cfgrib 0.9.15.x.
     Handles: descending latitudes, [0,360] longitudes.
     """
-    if not HAS_CFGRIB:
-        raise RuntimeError('cfgrib not installed. Run: pip install cfgrib xarray')
+    if not HAS_ECCODES:
+        raise RuntimeError('eccodes not installed. Run: pip install eccodes')
 
-    datasets = cfgrib.open_datasets(path, indexpath=None, decode_timedelta=False)
-    if not datasets:
-        raise ValueError(f'No datasets found in {path}')
+    with open(path, 'rb') as f:
+        msg = _eccodes.codes_grib_new_from_file(f)
+    if msg is None:
+        raise ValueError(f'No GRIB message found in {path}')
 
-    # Pick the dataset with the most data variables (usually just one)
-    ds = max(datasets, key=lambda d: len(d.data_vars))
-    var_name = list(ds.data_vars)[0]
-    da = ds[var_name]
+    try:
+        Ni        = _eccodes.codes_get_long(msg, 'Ni')
+        Nj        = _eccodes.codes_get_long(msg, 'Nj')
+        lat_first = _eccodes.codes_get(msg, 'latitudeOfFirstGridPointInDegrees')
+        lat_last  = _eccodes.codes_get(msg, 'latitudeOfLastGridPointInDegrees')
+        lon_first = _eccodes.codes_get(msg, 'longitudeOfFirstGridPointInDegrees')
+        di        = _eccodes.codes_get(msg, 'iDirectionIncrementInDegrees')
+        raw       = _eccodes.codes_get_values(msg)
+        if _eccodes.codes_get_long(msg, 'bitmapPresent'):
+            mv  = _eccodes.codes_get(msg, 'missingValue')
+            raw[np.abs(raw - mv) < 1.0] = np.nan
+    finally:
+        _eccodes.codes_release(msg)
 
-    if 'latitude' not in da.coords or 'longitude' not in da.coords:
-        raise ValueError(f'Expected latitude/longitude coords in {path}, got: {list(da.coords)}')
+    values = raw.reshape(Nj, Ni).astype(np.float32)
 
-    lats = da.coords['latitude'].values.copy()
-    lons = da.coords['longitude'].values.copy()
-    values = da.values.copy()
+    # Latitude array (Nj points, may be N→S in GRIB)
+    lats = np.linspace(lat_first, lat_last, Nj)
 
-    # Ensure 2D (some files have extra time/level dim)
-    if values.ndim > 2:
-        values = values.reshape(values.shape[-2], values.shape[-1])
+    # Longitude array: build from di to correctly handle wrap-around at 360°
+    lons_raw = (lon_first + np.arange(Ni) * di) % 360.0
+    sort_idx = np.argsort(lons_raw, kind='stable')
+    lons   = lons_raw[sort_idx]
+    values = values[:, sort_idx]
 
     # Fix descending latitudes (GRIB stores north→south, RegularGridInterpolator needs ascending)
     if lats[0] > lats[-1]:
-        lats = lats[::-1]
+        lats   = lats[::-1]
         values = values[::-1, :]
 
     # Fix [0, 360] longitude convention → [-180, 180]
     if lons.max() > 180:
-        shift = np.searchsorted(lons, 180.0)
-        lons = np.concatenate([lons[shift:] - 360.0, lons[:shift]])
+        shift  = np.searchsorted(lons, 180.0)
+        lons   = np.concatenate([lons[shift:] - 360.0, lons[:shift]])
         values = np.concatenate([values[:, shift:], values[:, :shift]], axis=1)
 
     if not np.all(np.diff(lats) > 0):
@@ -334,7 +346,43 @@ def load_grib_variable(path):
     if not np.all(np.diff(lons) > 0):
         raise ValueError(f'Longitude still not monotonically increasing after processing {path}')
 
-    return {'lats': lats, 'lons': lons, 'values': values.astype(np.float32)}
+    return {'lats': lats, 'lons': lons, 'values': values}
+
+
+def _grib_worker(path_str, queue):
+    """Subprocess worker: parse a GRIB2 file and place the result on queue."""
+    try:
+        result = load_grib_variable(path_str)
+        queue.put({'ok': result})
+    except Exception as e:
+        queue.put({'error': str(e)})
+
+
+def load_grib_safe(path, timeout=120):
+    """
+    Parse a GRIB2 file in a child process so that an eccodes/cfgrib segfault
+    kills only the worker, not the whole fetch script.
+    """
+    ctx = multiprocessing.get_context('fork')
+    q = ctx.Queue()
+    p = ctx.Process(target=_grib_worker, args=(str(path), q), daemon=True)
+    p.start()
+    p.join(timeout=timeout)
+    if p.is_alive():
+        p.terminate()
+        p.join(5)
+        raise RuntimeError(f'GRIB load timed out ({timeout}s): {path}')
+    if p.exitcode != 0:
+        raise RuntimeError(
+            f'GRIB loader crashed (exit {p.exitcode}) for {path} '
+            f'— likely an eccodes/cfgrib segfault'
+        )
+    if q.empty():
+        raise RuntimeError(f'GRIB loader produced no output for {path}')
+    result = q.get_nowait()
+    if 'error' in result:
+        raise RuntimeError(f'GRIB parse error: {result["error"]}')
+    return result['ok']
 
 
 def build_interpolator(grib_data):
@@ -1361,11 +1409,11 @@ def main():
         logging.info('Done.')
         return
 
-    if not HAS_CFGRIB:
+    if not HAS_ECCODES:
         print(
-            'ERROR: cfgrib is not installed.\n'
+            'ERROR: eccodes is not installed.\n'
             'Install dependencies:\n'
-            '  pip install cfgrib xarray scipy requests python-dotenv\n'
+            '  pip install eccodes scipy requests python-dotenv\n'
             '  brew install eccodes  # macOS\n'
             '  apt-get install libeccodes-dev  # Debian/Ubuntu',
             file=sys.stderr
