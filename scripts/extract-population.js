@@ -30,7 +30,7 @@ const LON_MIN = -25;
 const LON_MAX = 45;
 const STEP = 0.0625;
 
-// European country ISO A2 codes (same as build-population-grid.js)
+// European country ISO A2 codes
 const EUROPE_CODES = new Set([
   'AL', 'AD', 'AT', 'BY', 'BE', 'BA', 'BG', 'HR', 'CY', 'CZ',
   'DK', 'EE', 'FI', 'FR', 'DE', 'GR', 'HU', 'IS', 'IE', 'IT',
@@ -160,7 +160,7 @@ function samplePopulation(rasterData, tileInfo, cellLat, cellLon) {
   return sum;
 }
 
-// ─── Country assignment (from build-population-grid.js) ─────────────────
+// ─── Country assignment ──────────────────────────────────────────────────
 
 async function downloadCountries() {
   const url = 'https://raw.githubusercontent.com/nvkelso/natural-earth-vector/master/geojson/ne_50m_admin_0_countries.geojson';

@@ -13,8 +13,10 @@ Usage:
 
 Options:
     --threshold CELSIUS    Heat threshold in °C (default: HEAT_THRESHOLD env or 30)
-    --forecast-hours N     Forecast hours to download 0–72, hourly (default: 72)
-                           Use 0 for analysis only (current conditions).
+    --forecast-hours N     Forecast hours to download, 0-120 (default: 120,
+                           DWD ICON-EU's actual maximum). Hourly through
+                           +078h, 3-hourly beyond that. Use 0 for analysis
+                           only (current conditions).
     --db PATH              SQLite database path (default: data/heat-tracker.db)
     --grid PATH            Population grid JSON (default: data/population-grid.json)
     --verbose              Enable debug logging
@@ -57,6 +59,8 @@ try:
     load_dotenv()
 except ImportError:
     pass
+
+import heat_stats
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -159,9 +163,13 @@ def load_config():
         help='Heat threshold in °C (default: HEAT_THRESHOLD env or 30)'
     )
     parser.add_argument(
-        '--forecast-hours', type=int, default=72,
+        '--forecast-hours', type=int, default=120,
         metavar='N',
-        help='Hours of forecast to download [0–72, hourly] (default: 72; 0=analysis only)'
+        help=(
+            'Hours of forecast to download [0-120] (default: 120, ICON-EU\'s '
+            'actual maximum; 0=analysis only). Hourly through +078h, then '
+            '3-hourly through +120h.'
+        )
     )
     parser.add_argument(
         '--backfill-today', action='store_true',
@@ -201,8 +209,23 @@ def load_config():
         datefmt='%H:%M:%S'
     )
 
-    args.forecast_hours = max(0, min(72, args.forecast_hours))
+    args.forecast_hours = max(0, min(120, args.forecast_hours))
     return args
+
+
+def build_forecast_steps(forecast_hours, hourly_limit=78, coarse_step=3, coarse_limit=120):
+    """
+    Forecast hours to request, matching ICON-EU's actual publication cadence:
+    hourly from +000h through +078h, then every 3h through +120h. Requesting a
+    step DWD never publishes (e.g. +90 assumed as +79, +80...) would just 404,
+    so we only ever generate steps that actually exist.
+    """
+    forecast_hours = min(forecast_hours, coarse_limit)
+    steps = list(range(0, min(forecast_hours, hourly_limit) + 1))
+    if forecast_hours > hourly_limit:
+        next_coarse = hourly_limit + coarse_step - (hourly_limit % coarse_step)
+        steps += list(range(next_coarse, forecast_hours + 1, coarse_step))
+    return steps
 
 
 # ---------------------------------------------------------------------------
@@ -428,42 +451,10 @@ def compute_apparent_temperature(t2m_c, rh_pct, u10, v10):
 # Climatology (E-OBS 1961-1990 baseline)
 # ---------------------------------------------------------------------------
 
-def load_climatology(path):
-    """
-    Load the per-cell × day-of-year climatology produced by build-climatology.py.
-
-    Returns a dict {doy_mean, doy_p90, reference_period} or None if the file is
-    absent. Returning None lets the rest of the pipeline run unchanged — the new
-    indicators just stay NULL in the database and the existing exposure flow is
-    untouched. This makes the climatology a strictly additive feature.
-    """
-    if not path.exists():
-        logging.info(f'Climatology file not found at {path} — anomaly/above-avg '
-                     f'indicators will be NULL. Run scripts/build-climatology.py '
-                     f'to populate them.')
-        return None
-    try:
-        npz = np.load(path, allow_pickle=True)
-        meta = json.loads(npz['meta'].item())
-        clim = {
-            'doy_mean': npz['doy_mean'].astype(np.float32),  # (n_cells, 366)
-            'doy_p90':  npz['doy_p90'].astype(np.float32),
-            'reference_period': meta.get('reference_period', 'unknown'),
-            'percentile': meta.get('percentile', 90),
-        }
-        logging.info(f'Climatology loaded: {path.name} '
-                     f'(ref {clim["reference_period"]}, p{clim["percentile"]:g}, '
-                     f'{clim["doy_mean"].shape})')
-        return clim
-    except Exception as e:
-        logging.warning(f'Failed to load climatology from {path}: {e}. '
-                        f'Anomaly indicators will be NULL.')
-        return None
-
-
-def doy_index(valid_time):
-    """Day-of-year (0-365) for climatology array lookup."""
-    return valid_time.timetuple().tm_yday - 1
+# Moved to heat_stats.py so press-stats.py can share the same climatology
+# loader without importing this whole fetch script.
+load_climatology = heat_stats.load_climatology
+doy_index = heat_stats.doy_index
 
 
 # ---------------------------------------------------------------------------
@@ -814,242 +805,19 @@ def write_current_json(db_path, output_dir, threshold, climatology=None, pop_gri
         ),
     }
 
-    # Subquery: prefer analysis (is_forecast=0) over forecast for same timestamp.
-    best_sq = (
-        'SELECT id FROM snapshots s'
-        ' WHERE s.timestamp >= ? AND s.timestamp <= ?'
-        '   AND (s.is_forecast = 0 OR NOT EXISTS ('
-        '     SELECT 1 FROM snapshots s2'
-        '     WHERE s2.timestamp = s.timestamp AND s2.is_forecast = 0'
-        '   ))'
-    )
+    cell_idx_lookup = heat_stats.build_cell_idx_lookup(pop_grid) if pop_grid else None
 
     for preset_name, (from_ts, to_ts) in presets.items():
-        # Period summary
-        stats = conn.execute(
-            '''SELECT COUNT(DISTINCT id)       AS snapshot_count,
-                      MIN(timestamp)           AS oldest_timestamp,
-                      MAX(timestamp)           AS newest_timestamp,
-                      MAX(total_population)    AS total_population,
-                      MAX(is_forecast)         AS has_forecast,
-                      MAX(model_run_time)      AS latest_model_run_time,
-                      MAX(fetched_at)          AS latest_fetched_at
-               FROM snapshots
-               WHERE timestamp >= ? AND timestamp <= ?''',
-            (from_ts, to_ts)
-        ).fetchone()
-
-        if not stats or not stats['snapshot_count']:
+        result = heat_stats.compute_period_stats(
+            conn, from_ts, to_ts, threshold,
+            climatology=climatology, pop_grid=pop_grid, cell_idx_lookup=cell_idx_lookup,
+        )
+        if result is None:
             logging.warning(f'write_current_json: no data for {preset_name} — skipping')
             continue
 
-        # Total affected (cells above threshold at any point in the window)
-        affected_row = conn.execute(
-            f'''SELECT SUM(population) AS total_affected
-                FROM (
-                    SELECT lat, lon, population,
-                           CASE WHEN MAX(temperature) >= ? THEN 1 ELSE 0 END AS was_affected
-                    FROM grid_data
-                    WHERE snapshot_id IN ({best_sq}) AND country != 'TR'
-                    GROUP BY lat, lon
-                )
-                WHERE was_affected = 1''',
-            (threshold, from_ts, to_ts)
-        ).fetchone()
-
-        # Diurnal-coverage guard for the climatology headlines. The anomaly and
-        # "uncommonly hot" figures compare a per-cell DAILY MEAN (AVG of the
-        # window's hourly snapshots) against the E-OBS daily-mean climatology.
-        # That is only apples-to-apples if the window actually samples the full
-        # diurnal cycle — a daytime-only partial day (e.g. obs from 06–18 UTC
-        # with no forecast filling the night) yields a warm-biased "daily mean"
-        # and an inflated anomaly. We require ≥20 distinct hours per covered UTC
-        # day; below that we suppress the climatology headlines (meanAnomalyC →
-        # null, popAboveAvg → 0) rather than publish a biased figure. The
-        # threshold count is unaffected — it is an explicit any-hour-peak metric.
-        coverage = conn.execute(
-            '''SELECT COUNT(DISTINCT timestamp)              AS n_hours,
-                      COUNT(DISTINCT substr(timestamp, 1, 10)) AS n_days
-               FROM snapshots WHERE timestamp >= ? AND timestamp <= ?''',
-            (from_ts, to_ts)
-        ).fetchone()
-        n_hours = coverage['n_hours'] or 0
-        n_days  = max(1, coverage['n_days'] or 1)
-        coverage_ok = n_hours >= 20 * n_days
-        if not coverage_ok:
-            logging.warning(
-                f'write_current_json: {preset_name} has thin diurnal coverage '
-                f'({n_hours} hours over {n_days} day(s); need ≥{20 * n_days}) — '
-                f'suppressing climatology headlines to avoid a warm-biased anomaly.'
-            )
-
-        # Climatology window: average per-cell climatology over each day-of-year
-        # that the window covers. For 'today' this is exactly one doy (so no
-        # averaging); for 'last7d' it averages 8 doys, etc. Doing it this way
-        # means the climatology is locally appropriate even when the window
-        # straddles a season change (e.g. a window crossing 20-30 September).
-        clim_mean_window = None
-        clim_p90_window = None
-        cell_idx_lookup = None
-        if climatology is not None and pop_grid is not None and coverage_ok:
-            from_dt = dt.datetime.fromisoformat(from_ts.replace('Z', '+00:00'))
-            to_dt   = dt.datetime.fromisoformat(to_ts.replace('Z', '+00:00'))
-            day = from_dt.date()
-            doys_in_window = set()
-            while day <= to_dt.date():
-                doys_in_window.add(day.timetuple().tm_yday - 1)  # 0-indexed
-                day += dt.timedelta(days=1)
-            doys_arr = np.array(sorted(doys_in_window))
-            # Window-averaged climatology — uses nanmean so single-doy NaNs
-            # don't poison the whole window for a cell that's mostly in-domain.
-            clim_mean_window = np.nanmean(climatology['doy_mean'][:, doys_arr], axis=1)
-            clim_p90_window  = np.nanmean(climatology['doy_p90'][:,  doys_arr], axis=1)
-            cell_idx_lookup = {
-                (round(c['lat'], 4), round(c['lon'], 4)): i
-                for i, c in enumerate(pop_grid)
-            }
-
-        # Country aggregates (mirrors getCountryAggregatesForRange in weather.ts).
-        # avg_temp here is AVG(temperature) per cell across the window's snapshots
-        # — i.e. the per-cell DAILY MEAN, which is what we use for the
-        # climatology-anomaly headlines. max_temp / max_apparent_temperature
-        # stay snapshot-peak (Tmax-style), feeding the "exposed above
-        # threshold" indicator.
-        country_rows = conn.execute(
-            f'''SELECT country, lat, lon, MAX(population) AS population,
-                       CASE WHEN MAX(temperature) >= ? THEN 1 ELSE 0 END AS was_affected,
-                       MAX(temperature)               AS max_temp,
-                       MAX(apparent_temperature)      AS max_app_temp,
-                       AVG(temperature)               AS avg_temp
-                FROM grid_data
-                WHERE snapshot_id IN ({best_sq}) AND country != 'TR'
-                GROUP BY country, lat, lon''',
-            (threshold, from_ts, to_ts)
-        ).fetchall()
-
-        # Roll cell-level rows up to per-country AND Europe-wide aggregates in
-        # a single Python pass. The climatology anomaly is computed per-cell
-        # as (daily_mean − window_climatology_mean), and is_above_avg as
-        # (daily_mean > window_climatology_p90) — both apples-to-apples now.
-        country_agg = {}
-        europe_anom_sum = 0.0
-        europe_anom_count = 0
-        europe_pop_above_avg = 0
-        for r in country_rows:
-            c = r['country']
-            pop = r['population']
-            daily_mean = r['avg_temp']  # per-cell daily mean (or window mean)
-
-            # Climatology lookup for this cell (if available)
-            cell_anomaly = None
-            cell_above_avg = False
-            if clim_mean_window is not None and daily_mean is not None:
-                ci = cell_idx_lookup.get((round(r['lat'], 4), round(r['lon'], 4)))
-                if ci is not None:
-                    cm = clim_mean_window[ci]
-                    cp = clim_p90_window[ci]
-                    if np.isfinite(cm):
-                        cell_anomaly = float(daily_mean - cm)
-                    if np.isfinite(cp):
-                        cell_above_avg = daily_mean > cp
-
-            ca = country_agg.setdefault(c, {
-                'population': 0, 'affected': 0,
-                'maxTemp': None, 'maxAppTemp': None,
-                'tempSum': 0.0, 'tempCount': 0,
-                'popAboveAvg': 0,
-                'anomSum': 0.0, 'anomCount': 0,
-            })
-            ca['population'] += pop
-            if r['was_affected']:
-                ca['affected'] += pop
-            if cell_above_avg:
-                ca['popAboveAvg'] += pop
-                europe_pop_above_avg += pop
-            if cell_anomaly is not None:
-                ca['anomSum']   += cell_anomaly
-                ca['anomCount'] += 1
-                europe_anom_sum   += cell_anomaly
-                europe_anom_count += 1
-            if r['max_temp']     is not None:
-                ca['maxTemp']    = max(ca['maxTemp'], r['max_temp'])    if ca['maxTemp']    is not None else r['max_temp']
-                ca['tempSum']   += r['avg_temp'] if r['avg_temp'] is not None else r['max_temp']
-                ca['tempCount'] += 1
-            if r['max_app_temp'] is not None:
-                ca['maxAppTemp'] = max(ca['maxAppTemp'], r['max_app_temp']) if ca['maxAppTemp'] is not None else r['max_app_temp']
-
-        mean_anomaly_c = (
-            europe_anom_sum / europe_anom_count if europe_anom_count > 0 else None
-        )
-        pop_above_avg = europe_pop_above_avg
-
-        # Convert to the row-shape the JSON serializer below expects
-        class _Row(dict):
-            __getitem__ = dict.__getitem__
-        sorted_countries = sorted(
-            country_agg.items(),
-            key=lambda kv: (-kv[1]['affected'], -(kv[1]['maxAppTemp'] or -999))
-        )
-        country_rows = [
-            _Row({
-                'country': country,
-                'population': ca['population'],
-                'affected': ca['affected'],
-                'max_temperature': ca['maxTemp'],
-                'max_apparent_temperature': ca['maxAppTemp'],
-                'avg_temperature': ca['tempSum'] / ca['tempCount'] if ca['tempCount'] else None,
-                'pop_above_avg': ca['popAboveAvg'],
-                'avg_anomaly_c': (ca['anomSum'] / ca['anomCount']) if ca['anomCount'] else None,
-            })
-            for country, ca in sorted_countries
-        ]
-
-        result = {
-            'snapshot': {
-                'timestamp':        stats['newest_timestamp'],
-                'totalAffected':    affected_row['total_affected'] or 0,
-                'totalPopulation':  stats['total_population'] or 0,
-                'thresholdCelsius': threshold,
-                'snapshotCount':    stats['snapshot_count'],
-                'oldestTimestamp':  stats['oldest_timestamp'],
-                'hasForecast':      bool(stats['has_forecast']),
-                'modelRunTime':     stats['latest_model_run_time'],
-                # When our cron actually ingested this data. SQLite datetime('now')
-                # is UTC in 'YYYY-MM-DD HH:MM:SS' form; normalise to ISO-with-Z so
-                # the browser parses it as UTC, not local time.
-                'fetchedAt':        (stats['latest_fetched_at'].replace(' ', 'T') + 'Z')
-                                    if stats['latest_fetched_at'] else None,
-                # Climatology-based headline indicators. Null/0 if the
-                # climatology file was not present when this snapshot was
-                # fetched — so the API can branch on the existence of
-                # meanAnomalyC to decide whether to render the new headlines.
-                'meanAnomalyC':     round(mean_anomaly_c, 2) if mean_anomaly_c is not None else None,
-                'popAboveAvg':      int(pop_above_avg),
-                'referencePeriod':  '1961-1990',
-            },
-            'countries': [
-                {
-                    'country':               r['country'],
-                    'population':            r['population'],
-                    'affected':              r['affected'] or 0,
-                    'maxTemperature':        round(r['max_temperature'], 1)
-                                             if r['max_temperature'] is not None else None,
-                    'maxApparentTemperature': round(r['max_apparent_temperature'], 1)
-                                             if r['max_apparent_temperature'] is not None else None,
-                    'avgTemperature':        round(r['avg_temperature'], 1)
-                                             if r['avg_temperature'] is not None else None,
-                    'avgAnomalyC':           round(r['avg_anomaly_c'], 2)
-                                             if r['avg_anomaly_c'] is not None else None,
-                    'popAboveAvg':           int(r['pop_above_avg'] or 0),
-                }
-                for r in country_rows
-            ],
-            'indicator': 'temperature',
-            'period':    preset_name,
-            'from':      from_ts,
-            'to':        to_ts,
-            'availableRange': available_range,
-        }
+        result['period'] = preset_name
+        result['availableRange'] = available_range
 
         output_path = Path(output_dir) / f'current-{preset_name}.json'
         tmp = str(output_path) + '.tmp'
@@ -1447,10 +1215,10 @@ def main():
     model_run_time = datetime(run_date.year, run_date.month, run_date.day,
                               run_hour, tzinfo=timezone.utc)
 
-    # Build list of forecast hours for the main run (hourly, capped at 72h).
-    # DWD ICON-EU publishes hourly T_2M through +078h; we stop at 72h so every
-    # step is within the guaranteed hourly range.
-    forecast_steps = list(range(0, args.forecast_hours + 1))
+    # Build list of forecast hours for the main run. Hourly through +078h,
+    # then 3-hourly through +120h — matches DWD ICON-EU's actual publication
+    # cadence (see build_forecast_steps()).
+    forecast_steps = build_forecast_steps(args.forecast_hours)
 
     snapshots_written = 0
 

@@ -113,7 +113,7 @@ export function setHeadlineThreshold(v: number) {
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 export const mapInstance = writable<any>(null);
 
-export type SelectedDate = 'yesterday' | 'today' | 'tomorrow';
+export type SelectedDate = 'yesterday' | 'today' | 'tomorrow' | 'day2' | 'day3';
 export const selectedDate = writable<SelectedDate>('today');
 
 /**
@@ -196,9 +196,18 @@ export async function loadData() {
 			// when threshold/indicator are non-default.
 			currentParams = `?preset=tomorrow&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 			gridParams    = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
-		} else {
+		} else if (day === 'yesterday') {
 			const { from, to } = utcDayBounds(-1);
 			currentParams = `?preset=yesterday&from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
+			gridParams    = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
+		} else {
+			// day2 / day3 — no pre-generated fast-path file for these (unlike
+			// yesterday/today/tomorrow), so no `preset` param: both endpoints
+			// always hit the live DB range query (the same path yesterday/tomorrow
+			// already use whenever threshold/indicator aren't the defaults).
+			const offsetDays = day === 'day2' ? 2 : 3;
+			const { from, to } = utcDayBounds(offsetDays);
+			currentParams = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 			gridParams    = `?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}&indicator=temperature&threshold=${thr}`;
 		}
 

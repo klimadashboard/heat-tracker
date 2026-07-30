@@ -10,7 +10,7 @@ For every hour of the day the tracker answers: **how many people are currently l
 
 ```
 DWD ICON-EU forecast (GRIB2)
-        │  fetched hourly, 73 steps (0 h … 72 h ahead)
+        │  fetched hourly, ~92 steps (0 h … 120 h ahead)
         ▼
 scripts/fetch-dwd.py
         │  interpolates to ~175 k population-weighted grid cells
@@ -26,7 +26,7 @@ SvelteKit API routes (/api/current, /api/grid, …)
 SvelteKit frontend  ←  MapLibre GL map
 ```
 
-**Data source:** [DWD ICON-EU](https://www.dwd.de/EN/ourservices/nwp_forecast_data/nwp_forecast_data.html) — Germany's national weather service, open data. The model runs every 3 hours and publishes hourly forecast steps; we ingest steps 0 h … 72 h ahead.
+**Data source:** [DWD ICON-EU](https://www.dwd.de/EN/ourservices/nwp_forecast_data/nwp_forecast_data.html) — Germany's national weather service, open data. The model runs every 3 hours and publishes hourly forecast steps through +78 h, then 3-hourly through +120 h (its maximum); we ingest the full range.
 
 **Population grid:** ~175,000 cells built from [GHS-POP 2020](https://ghsl.jrc.ec.europa.eu/ghs_pop2023.php) at 30 arc-second resolution, clipped to Europe (Turkey excluded).
 
@@ -83,16 +83,28 @@ All scripts live in `scripts/`. They are separated into one-time setup scripts (
 
 ### Recurring (production cron)
 
-**`scripts/fetch-dwd.py`** — the core pipeline, run hourly in production.
+**`scripts/fetch-dwd.py`** — the entire pipeline, run hourly in production. This is the only scheduled job.
 
 ```bash
-python scripts/fetch-dwd.py [--threshold 30] [--forecast-hours 72]
+python scripts/fetch-dwd.py [--threshold 30] [--forecast-hours 120]
 
 # First run of the day: also backfill analysis for earlier model runs
 python scripts/fetch-dwd.py --backfill-today
 ```
 
-Downloads the latest ICON-EU GRIB2 files for T_2M, RELHUM_2M, U_10M, and V_10M; interpolates them to the population grid; computes apparent temperature (Steadman 1994); writes hourly snapshots to `data/heat-tracker.db`; regenerates the pre-computed GeoJSON and JSON files that the API serves from disk.
+Downloads the latest ICON-EU GRIB2 files for T_2M, RELHUM_2M, U_10M, and V_10M; interpolates them to the population grid; computes apparent temperature (Steadman 1994); writes hourly snapshots to `data/heat-tracker.db`; regenerates the pre-computed GeoJSON and JSON files that the API serves from disk. `--forecast-hours` defaults to 120 (DWD's actual maximum) so the DB always has several days of forecast on hand — see "Answering ad-hoc questions" below for why that matters.
+
+### Answering ad-hoc questions (e.g. via Claude / Slack)
+
+There's no separate reporting tool — `GET /api/current?from=<ISO>&to=<ISO>&threshold=<N>&indicator=temperature` is a live, public JSON endpoint that answers arbitrary questions like *"how many people in Europe/Germany are exposed to ≥35°C between yesterday and Sunday?"* directly against `heat-tracker.db`, no script to run:
+
+```bash
+curl "https://heat-tracker.eu/api/current?from=2026-07-29T00:00:00.000Z&to=2026-08-02T23:59:59.000Z&threshold=35"
+```
+
+Returns `snapshot.totalAffected` / `totalPopulation` / `meanAnomalyC` (Europe-wide) plus a `countries[]` array with the same fields per country. Because the DB keeps full history (no pruning) and the hourly cron now fetches 5 days ahead by default, this covers both the recent past and the near future without any extra fetch step.
+
+Any Claude session — Claude Code, claude.ai, or Claude in Slack — can resolve the natural-language date range itself (given today's date) and just fetch that URL to answer a teammate's question. Nothing to install or deploy beyond what's already running.
 
 ### One-time setup
 
@@ -109,7 +121,7 @@ python scripts/build-climatology.py --input data/eobs-tg-0.1deg-v30.nc
 
 **`scripts/build-nuts-grid.py`** — tags each cell in `population-grid.json` with its NUTS-1/2/3 region name, writing `data/nuts-by-cell.json`. Requires `data/nuts.geojson` (download from [Eurostat GISCO](https://gisco-services.ec.europa.eu/distribution/v2/nuts/geojson/NUTS_RG_03M_2021_4326.geojson)).
 
-**`scripts/build-population-grid.js`** — builds `data/population-grid.json` from GHS-POP GeoTIFF tiles. Tiles are not in git; see `data/ghspop-tiles/download.sh`.
+**`scripts/extract-population.js`** — builds `data/population-grid.json` from real GHS-POP GeoTIFF tiles (30 arc-second raster, summed per 0.125° cell). Tiles are not in git; see `data/ghspop-tiles/download.sh`.
 
 **`scripts/extract-turkey-border.js`** — extracts `static/turkey-border.json` from Natural Earth data. Turkey is excluded from the European totals for political reasons; the border is drawn as a visual boundary on the map.
 
@@ -143,11 +155,11 @@ docker compose up --build
    ```
 3. Trigger the cron or wait for the next scheduled run. Check logs for:
    - ✅ `Climatology loaded: climatology-1961-1990.npz`
-   - ✅ `Complete. 73 snapshots written.`
+   - ✅ `Complete. ~92 snapshots written.`
 
 ### Cron configuration (Coolify)
 
-Set the scheduled task to run every hour:
+Set the scheduled task to run every hour — this is the only scheduled job:
 
 ```
 docker exec <fetcher-container> python /app/scripts/fetch-dwd.py

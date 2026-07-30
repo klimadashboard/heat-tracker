@@ -581,7 +581,7 @@
 						${regionLine}
 					</div>
 					<div style="font-size:11px;text-transform:uppercase;letter-spacing:0.07em;color:#9c9ca8;margin-bottom:4px;">
-						${{ yesterday: 'Yesterday', today: 'Today', tomorrow: 'Tomorrow' }[get(selectedDate)]}${hasRange ? " (range)" : ""}
+						${{ yesterday: 'Yesterday', today: 'Today', tomorrow: 'Tomorrow', day2: 'In 2 days', day3: 'In 3 days' }[get(selectedDate)]}${hasRange ? " (range)" : ""}
 					</div>
 					${rows}
 					${buildBar(props, view)}

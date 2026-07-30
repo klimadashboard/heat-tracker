@@ -61,16 +61,20 @@
 	let hasPopAboveAvg = $derived(popAboveAvg != null);
 
 	let dateHeading = $derived(
-		$selectedDate === 'yesterday' ? 'Yesterday' : $selectedDate === 'tomorrow' ? 'Tomorrow' : 'Today'
+		$selectedDate === 'yesterday' ? 'Yesterday'
+		: $selectedDate === 'tomorrow' ? 'Tomorrow'
+		: $selectedDate === 'day2' ? 'In 2 days'
+		: $selectedDate === 'day3' ? 'In 3 days'
+		: 'Today'
 	);
 
 	// Past vs. present tense:
-	//   yesterday → always past tense
-	//   tomorrow  → always present/forecast
-	//   today     → past tense from 19:00 CET onward
+	//   yesterday        → always past tense
+	//   tomorrow/+2/+3   → always present/forecast
+	//   today            → past tense from 19:00 CET onward
 	let pastTense = $derived.by(() => {
 		if ($selectedDate === 'yesterday') return true;
-		if ($selectedDate === 'tomorrow')  return false;
+		if ($selectedDate === 'tomorrow' || $selectedDate === 'day2' || $selectedDate === 'day3') return false;
 		void $snapshot; // re-evaluate on each data refresh
 		try {
 			const h = Number(

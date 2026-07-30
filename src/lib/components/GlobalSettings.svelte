@@ -17,6 +17,8 @@
 		{ value: 'yesterday', label: 'Yesterday', offset: -1 },
 		{ value: 'today',     label: 'Today',     offset:  0 },
 		{ value: 'tomorrow',  label: 'Tomorrow',  offset:  1 },
+		{ value: 'day2',      label: '+2 days',   offset:  2 },
+		{ value: 'day3',      label: '+3 days',   offset:  3 },
 	];
 
 	let open = $state(false);
