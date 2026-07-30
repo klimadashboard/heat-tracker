@@ -7,3 +7,5 @@ build
 data/ghspop-tiles
 .claude
 .git
+__pycache__
+.DS_Store

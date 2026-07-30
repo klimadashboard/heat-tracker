@@ -18,7 +18,7 @@ RUN pip install --no-cache-dir \
 
 WORKDIR /app
 
-COPY scripts/fetch-dwd.py scripts/fetch-dwd.py
+COPY scripts/ scripts/
 
 # Keep the container alive so Coolify scheduled tasks can exec into it
 CMD ["tail", "-f", "/dev/null"]
