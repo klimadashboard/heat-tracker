@@ -3,6 +3,7 @@
 	import { get } from "svelte/store";
 	import { goto } from "$app/navigation";
 	import maplibregl from "maplibre-gl";
+	import { env } from "$env/dynamic/public";
 	import {
 		gridData,
 		selectedCountry,
@@ -123,7 +124,7 @@
 				sources: {
 					"carto-base": {
 						type: "raster",
-						tiles: ["https://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png"],
+						tiles: [`https://basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}@2x.png?key=${env.PUBLIC_CARTO_API_KEY}`],
 						tileSize: 256,
 						attribution:
 							'&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> &copy; <a href="https://carto.com/">CARTO</a>',
@@ -231,10 +232,10 @@
 		// Add the label source + glyphs lazily (see the style comment): this keeps
 		// the core map independent of CARTO's vector TileJSON.
 		if (!map.getSource("carto-labels")) {
-			map.setGlyphs("https://tiles.basemaps.cartocdn.com/fonts/{fontstack}/{range}.pbf");
+			map.setGlyphs(`https://tiles.basemaps.cartocdn.com/fonts/{fontstack}/{range}.pbf?key=${env.PUBLIC_CARTO_API_KEY}`);
 			map.addSource("carto-labels", {
 				type: "vector",
-				url: "https://tiles.basemaps.cartocdn.com/vector/carto.streets/v1/tiles.json",
+				url: `https://tiles.basemaps.cartocdn.com/vector/carto.streets/v1/tiles.json?key=${env.PUBLIC_CARTO_API_KEY}`,
 			});
 		}
 
