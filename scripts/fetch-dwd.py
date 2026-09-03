@@ -101,22 +101,34 @@ CREATE TABLE IF NOT EXISTS snapshots (
     pop_above_avg INTEGER NOT NULL DEFAULT 0
 );
 
-CREATE TABLE IF NOT EXISTS grid_data (
-    snapshot_id INTEGER NOT NULL,
+-- Static reference table: one row per population-grid cell (175,398 rows),
+-- populated once from population-grid.json and never rewritten per snapshot.
+-- cell_id == the cell's index in population-grid.json, matching the array
+-- indexing already used for the climatology arrays (see heat_stats.doy_index)
+-- — no separate id-assignment step needed.
+CREATE TABLE IF NOT EXISTS grid_cells (
+    id INTEGER PRIMARY KEY,
     lat REAL NOT NULL,
     lon REAL NOT NULL,
     country TEXT NOT NULL,
-    population INTEGER NOT NULL,
+    population INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_grid_cells_country ON grid_cells(country);
+
+CREATE TABLE IF NOT EXISTS grid_data (
+    snapshot_id INTEGER NOT NULL,
+    cell_id INTEGER NOT NULL,
     temperature REAL,
     apparent_temperature REAL,
     is_affected INTEGER NOT NULL DEFAULT 0,
     anomaly_c REAL,                            -- per-snapshot temperature − climatology daily mean; AVG'd per day for the anomaly map
     is_above_avg INTEGER NOT NULL DEFAULT 0,   -- DEPRECATED, always 0 (see snapshots.pop_above_avg note)
-    FOREIGN KEY (snapshot_id) REFERENCES snapshots(id)
+    FOREIGN KEY (snapshot_id) REFERENCES snapshots(id),
+    FOREIGN KEY (cell_id) REFERENCES grid_cells(id)
 );
 
 CREATE INDEX IF NOT EXISTS idx_grid_snapshot ON grid_data(snapshot_id);
-CREATE INDEX IF NOT EXISTS idx_grid_country ON grid_data(snapshot_id, country);
+CREATE INDEX IF NOT EXISTS idx_grid_cell ON grid_data(cell_id);
 
 CREATE TABLE IF NOT EXISTS country_aggregates (
     snapshot_id INTEGER NOT NULL,
@@ -579,15 +591,16 @@ def write_grid_geojson(db_path, output_path):
 
     placeholders = ','.join('?' * len(snapshot_ids))
     cells = conn.execute(
-        f'''SELECT lat, lon, country, MAX(population) AS population,
-                   MAX(temperature) AS temperature,
-                   MAX(apparent_temperature) AS apparent_temperature,
-                   MIN(temperature) AS min_temperature,
-                   MIN(apparent_temperature) AS min_apparent_temperature,
-                   AVG(anomaly_c) AS anomaly_c
-            FROM grid_data
-            WHERE snapshot_id IN ({placeholders}) AND country != 'TR'
-            GROUP BY lat, lon''',
+        f'''SELECT gc.lat, gc.lon, gc.country, gc.population AS population,
+                   MAX(gd.temperature) AS temperature,
+                   MAX(gd.apparent_temperature) AS apparent_temperature,
+                   MIN(gd.temperature) AS min_temperature,
+                   MIN(gd.apparent_temperature) AS min_apparent_temperature,
+                   AVG(gd.anomaly_c) AS anomaly_c
+            FROM grid_data gd
+            JOIN grid_cells gc ON gc.id = gd.cell_id
+            WHERE gd.snapshot_id IN ({placeholders}) AND gc.country != 'TR'
+            GROUP BY gd.cell_id''',
         snapshot_ids
     ).fetchall()
 
@@ -595,12 +608,13 @@ def write_grid_geojson(db_path, output_path):
     # that produced that maximum — so peak_hour_utc reliably reflects when each
     # cell was hottest, not an arbitrary row.
     peak_rows = conn.execute(
-        f'''SELECT gd.lat, gd.lon, MAX(gd.temperature) AS max_temp,
+        f'''SELECT gc.lat, gc.lon, MAX(gd.temperature) AS max_temp,
                    substr(s.timestamp, 12, 5) AS peak_hour_utc
             FROM grid_data gd
+            JOIN grid_cells gc ON gc.id = gd.cell_id
             JOIN snapshots s ON s.id = gd.snapshot_id
-            WHERE gd.snapshot_id IN ({placeholders}) AND gd.country != 'TR'
-            GROUP BY gd.lat, gd.lon''',
+            WHERE gd.snapshot_id IN ({placeholders}) AND gc.country != 'TR'
+            GROUP BY gd.cell_id''',
         snapshot_ids
     ).fetchall()
     peak_hour_by_cell = {(r[0], r[1]): r[3] for r in peak_rows}
@@ -692,15 +706,16 @@ def write_grid_geojson_for_range(db_path, output_path, days_back=None, days_forw
     placeholders = ','.join('?' * len(snapshot_ids))
 
     cells = conn.execute(
-        f'''SELECT lat, lon, country, MAX(population) AS population,
-                   MAX(temperature) AS temperature,
-                   MAX(apparent_temperature) AS apparent_temperature,
-                   MIN(temperature) AS min_temperature,
-                   MIN(apparent_temperature) AS min_apparent_temperature,
-                   AVG(anomaly_c) AS anomaly_c
-            FROM grid_data
-            WHERE snapshot_id IN ({placeholders}) AND country != 'TR'
-            GROUP BY lat, lon''',
+        f'''SELECT gc.lat, gc.lon, gc.country, gc.population AS population,
+                   MAX(gd.temperature) AS temperature,
+                   MAX(gd.apparent_temperature) AS apparent_temperature,
+                   MIN(gd.temperature) AS min_temperature,
+                   MIN(gd.apparent_temperature) AS min_apparent_temperature,
+                   AVG(gd.anomaly_c) AS anomaly_c
+            FROM grid_data gd
+            JOIN grid_cells gc ON gc.id = gd.cell_id
+            WHERE gd.snapshot_id IN ({placeholders}) AND gc.country != 'TR'
+            GROUP BY gd.cell_id''',
         snapshot_ids
     ).fetchall()
     conn.close()
@@ -805,12 +820,10 @@ def write_current_json(db_path, output_dir, threshold, climatology=None, pop_gri
         ),
     }
 
-    cell_idx_lookup = heat_stats.build_cell_idx_lookup(pop_grid) if pop_grid else None
-
     for preset_name, (from_ts, to_ts) in presets.items():
         result = heat_stats.compute_period_stats(
             conn, from_ts, to_ts, threshold,
-            climatology=climatology, pop_grid=pop_grid, cell_idx_lookup=cell_idx_lookup,
+            climatology=climatology, pop_grid=pop_grid,
         )
         if result is None:
             logging.warning(f'write_current_json: no data for {preset_name} — skipping')
@@ -836,6 +849,25 @@ def write_current_json(db_path, output_dir, threshold, climatology=None, pop_gri
 # ---------------------------------------------------------------------------
 # Database
 # ---------------------------------------------------------------------------
+
+def seed_grid_cells(conn, pop_grid):
+    """
+    Populate the static grid_cells reference table from population-grid.json.
+    Idempotent (INSERT OR IGNORE) — cheap to call on every run. cell_id is the
+    cell's index in pop_grid, so this must be called with the same pop_grid
+    order that write_snapshot() uses.
+
+    NOTE: this only seeds a table that doesn't exist yet on a fresh DB. An
+    existing production database with the old (pre-normalization) grid_data
+    schema needs the one-time scripts/migrate-grid-cells.py migration instead
+    — this function does not touch or backfill existing grid_data rows.
+    """
+    conn.executemany(
+        'INSERT OR IGNORE INTO grid_cells (id, lat, lon, country, population) VALUES (?, ?, ?, ?, ?)',
+        [(i, c['lat'], c['lon'], c['country'], c['pop']) for i, c in enumerate(pop_grid)]
+    )
+    conn.commit()
+
 
 def run_migrations(conn):
     """
@@ -866,6 +898,36 @@ def run_migrations(conn):
                 pass  # column already exists — expected on second run
             else:
                 raise
+
+
+def checkpoint_wal(db_path):
+    """
+    Attempt a full WAL checkpoint (TRUNCATE) so the -wal file doesn't grow
+    unbounded between fetches. Called once per hourly run, after all writes
+    for this run are done.
+
+    TRUNCATE requires no other connection holds an open read snapshot at
+    checkpoint time; if the always-running web app (or another process) does,
+    this call succeeds but only partially checkpoints (busy=1, log truncated
+    to fewer frames than it read) rather than failing outright. We log the
+    result so a persistently large WAL shows up in the hourly logs instead of
+    only being noticed when disk space runs low.
+    """
+    conn = sqlite3.connect(str(db_path))
+    try:
+        busy, log_frames, checkpointed_frames = conn.execute(
+            'PRAGMA wal_checkpoint(TRUNCATE)'
+        ).fetchone()
+        if busy or checkpointed_frames < log_frames:
+            logging.warning(
+                f'WAL checkpoint incomplete (busy={busy}, checkpointed {checkpointed_frames}/{log_frames} '
+                f'frames) — another connection likely holds an open read snapshot. '
+                f'The -wal file will keep growing until a checkpoint can complete.'
+            )
+        else:
+            logging.debug(f'WAL checkpoint OK ({checkpointed_frames} frames truncated)')
+    finally:
+        conn.close()
 
 
 def write_snapshot(db_path, pop_grid, t2m_c, apparent_temp,
@@ -917,6 +979,7 @@ def write_snapshot(db_path, pop_grid, t2m_c, apparent_temp,
     conn.execute('PRAGMA journal_mode=WAL')
     conn.execute('PRAGMA synchronous=NORMAL')
     run_migrations(conn)
+    seed_grid_cells(conn, pop_grid)
 
     # Deduplicate: if a snapshot for this exact valid_time already exists, delete
     # it (plus its grid_data and country_aggregates) before inserting fresh data.
@@ -978,8 +1041,7 @@ def write_snapshot(db_path, pop_grid, t2m_c, apparent_temp,
         is_affected = 1 if (t is not None and t >= threshold) else 0
 
         rows.append((
-            snapshot_id, cell['lat'], cell['lon'], cell['country'],
-            cell['pop'], t, at, is_affected, anom, above
+            snapshot_id, i, t, at, is_affected, anom, above
         ))
 
         total_population += cell['pop']
@@ -1020,10 +1082,9 @@ def write_snapshot(db_path, pop_grid, t2m_c, apparent_temp,
     with conn:
         conn.executemany(
             '''INSERT INTO grid_data
-               (snapshot_id, lat, lon, country, population,
-                temperature, apparent_temperature, is_affected,
-                anomaly_c, is_above_avg)
-               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+               (snapshot_id, cell_id, temperature, apparent_temperature,
+                is_affected, anomaly_c, is_above_avg)
+               VALUES (?, ?, ?, ?, ?, ?, ?)''',
             rows
         )
         conn.execute(
@@ -1269,6 +1330,7 @@ def main():
         db_path, data_dir, args.threshold,
         climatology=climatology, pop_grid=pop_grid,
     )
+    checkpoint_wal(db_path)
 
 
 if __name__ == '__main__':

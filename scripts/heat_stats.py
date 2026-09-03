@@ -56,25 +56,16 @@ def doy_index(valid_time):
     return valid_time.timetuple().tm_yday - 1
 
 
-def build_cell_idx_lookup(pop_grid):
-    """(round(lat,4), round(lon,4)) -> index into pop_grid / climatology arrays."""
-    return {
-        (round(c['lat'], 4), round(c['lon'], 4)): i
-        for i, c in enumerate(pop_grid)
-    }
-
-
 def compute_period_stats(conn, from_ts, to_ts, threshold,
-                          climatology=None, pop_grid=None, cell_idx_lookup=None):
+                          climatology=None, pop_grid=None):
     """
     Compute population-weighted heat exposure + climatology-anomaly stats for
     an arbitrary [from_ts, to_ts] ISO-8601 UTC window.
 
     `conn` must be a sqlite3.Connection with row_factory = sqlite3.Row, opened
     against heat-tracker.db. `pop_grid` is the parsed population-grid.json
-    (only needed if `climatology` is given). `cell_idx_lookup` can be
-    precomputed once via build_cell_idx_lookup() and reused across many calls
-    (e.g. one per day/threshold) to avoid rebuilding it every time.
+    (only needed as a readiness gate when `climatology` is given — grid_data.cell_id
+    already matches the climatology arrays' indexing, see grid_cells in fetch-dwd.py).
 
     Returns None if there is no snapshot data at all in the window.
     """
@@ -107,11 +98,12 @@ def compute_period_stats(conn, from_ts, to_ts, threshold,
     affected_row = conn.execute(
         f'''SELECT SUM(population) AS total_affected
             FROM (
-                SELECT lat, lon, population,
-                       CASE WHEN MAX(temperature) >= ? THEN 1 ELSE 0 END AS was_affected
-                FROM grid_data
-                WHERE snapshot_id IN ({best_sq}) AND country != 'TR'
-                GROUP BY lat, lon
+                SELECT gc.population AS population,
+                       CASE WHEN MAX(gd.temperature) >= ? THEN 1 ELSE 0 END AS was_affected
+                FROM grid_data gd
+                JOIN grid_cells gc ON gc.id = gd.cell_id
+                WHERE gd.snapshot_id IN ({best_sq}) AND gc.country != 'TR'
+                GROUP BY gd.cell_id
             )
             WHERE was_affected = 1''',
         (threshold, from_ts, to_ts)
@@ -149,18 +141,17 @@ def compute_period_stats(conn, from_ts, to_ts, threshold,
         doys_arr = np.array(sorted(doys_in_window))
         clim_mean_window = np.nanmean(climatology['doy_mean'][:, doys_arr], axis=1)
         clim_p90_window  = np.nanmean(climatology['doy_p90'][:,  doys_arr], axis=1)
-        if cell_idx_lookup is None:
-            cell_idx_lookup = build_cell_idx_lookup(pop_grid)
 
     country_rows = conn.execute(
-        f'''SELECT country, lat, lon, MAX(population) AS population,
-                   CASE WHEN MAX(temperature) >= ? THEN 1 ELSE 0 END AS was_affected,
-                   MAX(temperature)               AS max_temp,
-                   MAX(apparent_temperature)      AS max_app_temp,
-                   AVG(temperature)               AS avg_temp
-            FROM grid_data
-            WHERE snapshot_id IN ({best_sq}) AND country != 'TR'
-            GROUP BY country, lat, lon''',
+        f'''SELECT gc.country AS country, gd.cell_id AS cell_id, gc.population AS population,
+                   CASE WHEN MAX(gd.temperature) >= ? THEN 1 ELSE 0 END AS was_affected,
+                   MAX(gd.temperature)               AS max_temp,
+                   MAX(gd.apparent_temperature)      AS max_app_temp,
+                   AVG(gd.temperature)               AS avg_temp
+            FROM grid_data gd
+            JOIN grid_cells gc ON gc.id = gd.cell_id
+            WHERE gd.snapshot_id IN ({best_sq}) AND gc.country != 'TR'
+            GROUP BY gc.country, gd.cell_id''',
         (threshold, from_ts, to_ts)
     ).fetchall()
 
@@ -176,14 +167,13 @@ def compute_period_stats(conn, from_ts, to_ts, threshold,
         cell_anomaly = None
         cell_above_avg = False
         if clim_mean_window is not None and daily_mean is not None:
-            ci = cell_idx_lookup.get((round(r['lat'], 4), round(r['lon'], 4)))
-            if ci is not None:
-                cm = clim_mean_window[ci]
-                cp = clim_p90_window[ci]
-                if np.isfinite(cm):
-                    cell_anomaly = float(daily_mean - cm)
-                if np.isfinite(cp):
-                    cell_above_avg = daily_mean > cp
+            ci = r['cell_id']
+            cm = clim_mean_window[ci]
+            cp = clim_p90_window[ci]
+            if np.isfinite(cm):
+                cell_anomaly = float(daily_mean - cm)
+            if np.isfinite(cp):
+                cell_above_avg = daily_mean > cp
 
         ca = country_agg.setdefault(c, {
             'population': 0, 'affected': 0,

@@ -28,20 +28,30 @@ function initializeDb(db: Database.Database) {
 			model_run_time TEXT
 		);
 
-		CREATE TABLE IF NOT EXISTS grid_data (
-			snapshot_id INTEGER NOT NULL,
+		-- Static reference table: one row per population-grid cell, populated
+		-- once by scripts/fetch-dwd.py from population-grid.json. cell_id in
+		-- grid_data is the cell's index in that file.
+		CREATE TABLE IF NOT EXISTS grid_cells (
+			id INTEGER PRIMARY KEY,
 			lat REAL NOT NULL,
 			lon REAL NOT NULL,
 			country TEXT NOT NULL,
-			population INTEGER NOT NULL,
+			population INTEGER NOT NULL
+		);
+		CREATE INDEX IF NOT EXISTS idx_grid_cells_country ON grid_cells(country);
+
+		CREATE TABLE IF NOT EXISTS grid_data (
+			snapshot_id INTEGER NOT NULL,
+			cell_id INTEGER NOT NULL,
 			temperature REAL,
 			apparent_temperature REAL,
 			is_affected INTEGER NOT NULL DEFAULT 0,
-			FOREIGN KEY (snapshot_id) REFERENCES snapshots(id)
+			FOREIGN KEY (snapshot_id) REFERENCES snapshots(id),
+			FOREIGN KEY (cell_id) REFERENCES grid_cells(id)
 		);
 
 		CREATE INDEX IF NOT EXISTS idx_grid_snapshot ON grid_data(snapshot_id);
-		CREATE INDEX IF NOT EXISTS idx_grid_country ON grid_data(snapshot_id, country);
+		CREATE INDEX IF NOT EXISTS idx_grid_cell ON grid_data(cell_id);
 
 		CREATE TABLE IF NOT EXISTS indoor_temps (
 			id INTEGER PRIMARY KEY AUTOINCREMENT,

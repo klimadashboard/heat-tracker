@@ -79,10 +79,12 @@ export function getAvailableRange(): { from: string; to: string; hasForecast: bo
 export function getGridData(snapshotId: number) {
 	const db = getDb();
 	return db.prepare(`
-		SELECT lat, lon, country, population,
-		       temperature, apparent_temperature as apparentTemperature,
-		       is_affected as isAffected
-		FROM grid_data WHERE snapshot_id = ? AND country != 'TR'
+		SELECT gc.lat, gc.lon, gc.country, gc.population,
+		       gd.temperature, gd.apparent_temperature as apparentTemperature,
+		       gd.is_affected as isAffected
+		FROM grid_data gd
+		JOIN grid_cells gc ON gc.id = gd.cell_id
+		WHERE gd.snapshot_id = ? AND gc.country != 'TR'
 	`).all(snapshotId);
 }
 
@@ -116,16 +118,17 @@ export function getGridDataForRange(
 	const col = indicatorColumn(indicator);
 	const db = getDb();
 	return db.prepare(`
-		SELECT lat, lon, country, population,
-		       MAX(temperature) as temperature,
-		       MAX(apparent_temperature) as apparentTemperature,
-		       MIN(temperature) as minTemperature,
-		       MIN(apparent_temperature) as minApparentTemperature,
-		       AVG(anomaly_c) as anomalyC,
-		       CASE WHEN MAX(${col}) >= ? THEN 1 ELSE 0 END as isAffected
-		FROM grid_data
-		WHERE snapshot_id IN (${bestSnapshotsSubquery()}) AND country != 'TR'
-		GROUP BY lat, lon
+		SELECT gc.lat, gc.lon, gc.country, gc.population,
+		       MAX(gd.temperature) as temperature,
+		       MAX(gd.apparent_temperature) as apparentTemperature,
+		       MIN(gd.temperature) as minTemperature,
+		       MIN(gd.apparent_temperature) as minApparentTemperature,
+		       AVG(gd.anomaly_c) as anomalyC,
+		       CASE WHEN MAX(gd.${col}) >= ? THEN 1 ELSE 0 END as isAffected
+		FROM grid_data gd
+		JOIN grid_cells gc ON gc.id = gd.cell_id
+		WHERE gd.snapshot_id IN (${bestSnapshotsSubquery()}) AND gc.country != 'TR'
+		GROUP BY gd.cell_id
 	`).all(threshold, from, to);
 }
 
@@ -164,11 +167,12 @@ export function getPeriodSummaryForRange(
 	const affected = db.prepare(`
 		SELECT SUM(population) as totalAffected
 		FROM (
-			SELECT lat, lon, population,
-			       CASE WHEN MAX(${col}) >= ? THEN 1 ELSE 0 END as wasAffected
-			FROM grid_data
-			WHERE snapshot_id IN (${bestSnapshotsSubquery()}) AND country != 'TR'
-			GROUP BY lat, lon
+			SELECT gc.population as population,
+			       CASE WHEN MAX(gd.${col}) >= ? THEN 1 ELSE 0 END as wasAffected
+			FROM grid_data gd
+			JOIN grid_cells gc ON gc.id = gd.cell_id
+			WHERE gd.snapshot_id IN (${bestSnapshotsSubquery()}) AND gc.country != 'TR'
+			GROUP BY gd.cell_id
 		)
 		WHERE wasAffected = 1
 	`).get(threshold, from, to) as any;
@@ -178,11 +182,12 @@ export function getPeriodSummaryForRange(
 	const anomalyRow = db.prepare(`
 		SELECT AVG(cell_avg) as meanAnomalyC
 		FROM (
-			SELECT AVG(anomaly_c) as cell_avg
-			FROM grid_data
-			WHERE snapshot_id IN (${bestSnapshotsSubquery()}) AND country != 'TR'
-			  AND anomaly_c IS NOT NULL
-			GROUP BY lat, lon
+			SELECT AVG(gd.anomaly_c) as cell_avg
+			FROM grid_data gd
+			JOIN grid_cells gc ON gc.id = gd.cell_id
+			WHERE gd.snapshot_id IN (${bestSnapshotsSubquery()}) AND gc.country != 'TR'
+			  AND gd.anomaly_c IS NOT NULL
+			GROUP BY gd.cell_id
 		)
 		WHERE cell_avg IS NOT NULL
 	`).get(from, to) as any;
@@ -217,15 +222,16 @@ export function getCountryAggregatesForRange(
 		       AVG(avgTemp) as avgTemperature,
 		       AVG(cellAnomaly) as avgAnomalyC
 		FROM (
-			SELECT country, population as cellPop,
-			       CASE WHEN MAX(${col}) >= ? THEN 1 ELSE 0 END as wasAffected,
-			       MAX(temperature) as maxTemp,
-			       MAX(apparent_temperature) as maxAppTemp,
-			       AVG(temperature) as avgTemp,
-			       AVG(anomaly_c) as cellAnomaly
-			FROM grid_data
-			WHERE snapshot_id IN (${bestSnapshotsSubquery()}) AND country != 'TR'
-			GROUP BY lat, lon
+			SELECT gc.country as country, gc.population as cellPop,
+			       CASE WHEN MAX(gd.${col}) >= ? THEN 1 ELSE 0 END as wasAffected,
+			       MAX(gd.temperature) as maxTemp,
+			       MAX(gd.apparent_temperature) as maxAppTemp,
+			       AVG(gd.temperature) as avgTemp,
+			       AVG(gd.anomaly_c) as cellAnomaly
+			FROM grid_data gd
+			JOIN grid_cells gc ON gc.id = gd.cell_id
+			WHERE gd.snapshot_id IN (${bestSnapshotsSubquery()}) AND gc.country != 'TR'
+			GROUP BY gd.cell_id
 		)
 		GROUP BY country
 		ORDER BY affected DESC, maxApparentTemperature DESC
